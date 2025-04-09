@@ -14,9 +14,9 @@ def diffusion_defaults():
     """
     return dict(
         learn_sigma=False,
-        diffusion_steps=1000,
+        diffusion_steps=2000,
         noise_schedule="linear",
-        timestep_respacing="",
+        timestep_respacing="250",
         use_kl=False,
         predict_xstart=False,
         rescale_timesteps=False,
@@ -32,7 +32,7 @@ def classifier_defaults():
         image_size=64,
         classifier_use_fp16=False,
         classifier_width=128,
-        classifier_depth=2,
+        classifier_depth=3,
         classifier_attention_resolutions="32,16,8",  # 16
         classifier_use_scale_shift_norm=True,  # False
         classifier_resblock_updown=True,  # False
@@ -165,9 +165,9 @@ def create_model(
 
     return UNetModel(
         image_size=image_size,
-        in_channels=6,
+        in_channels=2,
         model_channels=num_channels,
-        out_channels=(3 if not learn_sigma else 6),
+        out_channels=(1 if not learn_sigma else 2),  # 04.01 learn_sigma else 后改成几？原为6,改为2吗
         num_res_blocks=num_res_blocks,
         attention_resolutions=tuple(attention_ds),
         dropout=dropout,
@@ -252,7 +252,7 @@ def create_classifier(
 
     return EncoderUNetModel(
         image_size=image_size,
-        in_channels=3,
+        in_channels=1,
         model_channels=classifier_width,
         out_channels=1000,
         num_res_blocks=classifier_depth,
@@ -365,9 +365,9 @@ def sr_create_model(
 
     return SuperResModel(
         image_size=large_size,
-        in_channels=3,
+        in_channels=1,
         model_channels=num_channels,
-        out_channels=(3 if not learn_sigma else 6),
+        out_channels=(1 if not learn_sigma else 2),  # 04.01，修改输入输出通道数，不知道改得对不对
         num_res_blocks=num_res_blocks,
         attention_resolutions=tuple(attention_ds),
         dropout=dropout,

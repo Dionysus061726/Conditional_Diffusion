@@ -4,6 +4,7 @@ import blobfile as bf
 import math
 import numpy as np
 from PIL import Image
+from skimage import io
 from mpi4py import MPI
 from torch.utils.data import DataLoader, Dataset
 
@@ -36,6 +37,7 @@ def load_data(
     :param deterministic: if True, yield results in a deterministic order.
     :param random_crop: if True, randomly crop the images for augmentation.
     :param random_flip: if True, randomly flip the images for augmentation.
+    :return:
     """
     print("data_dir_sar: ", data_dir_sar)
     print("data_dir_opt: ", data_dir_opt)
@@ -45,7 +47,7 @@ def load_data(
     all_files_sar = _list_image_files_recursively(data_dir_sar)
     all_files_opt = _list_image_files_recursively(data_dir_opt)
     classes = None
-    #
+
     all_files_sar.sort(key=lambda x: int(x[len(data_dir_sar) + 1:].split('.')[0]))
     all_files_opt.sort(key=lambda x: int(x[len(data_dir_opt) + 1:].split('.')[0]))
 
@@ -55,6 +57,7 @@ def load_data(
         class_names = [bf.basename(path).split("_")[0] for path in data_dir_opt]
         sorted_classes = {x: i for i, x in enumerate(sorted(set(class_names)))}
         classes = [sorted_classes[x] for x in class_names]
+
     dataset = ImageDataset(
         image_size,
         all_files_sar,
@@ -65,6 +68,7 @@ def load_data(
         random_crop=random_crop,
         random_flip=random_flip,
     )
+
     if deterministic:
         loader = DataLoader(
             dataset, batch_size=batch_size, shuffle=False, num_workers=1, drop_last=True
@@ -73,15 +77,23 @@ def load_data(
         loader = DataLoader(
             dataset, batch_size=batch_size, shuffle=True, num_workers=1, drop_last=True
         )
+
     while True:
         yield from loader
 
 
 def _list_image_files_recursively(data_dir):
+    """
+    递归地将data_dir文件夹下所有图像文件获取，储存在一个列表results中
+    子文件夹中的图像也会被递归遍历
+
+    :param data_dir: 输入文件夹
+    :return: results: 图像文件列表
+    """
     results = []
     for entry in sorted(bf.listdir(data_dir)):
         full_path = bf.join(data_dir, entry)
-        ext = entry.split(".")[-1]
+        ext = entry.split(".")[-1]  # 扩展名
         if "." in entry and ext.lower() in ["jpg", "jpeg", "png", "gif"]:
             results.append(full_path)
         elif bf.isdir(full_path):
@@ -118,11 +130,14 @@ class ImageDataset(Dataset):
         with bf.BlobFile(path_sar, "rb") as f:
             pil_image_sar = Image.open(f)
             pil_image_sar.load()
-        pil_image_sar = pil_image_sar.convert("RGB")
+        pil_image_sar = pil_image_sar.convert("L")
+        nd_array_sar = np.array(pil_image_sar)
+
         with bf.BlobFile(path_opt, "rb") as f:
             pil_image_opt = Image.open(f)
             pil_image_opt.load()
-        pil_image_opt = pil_image_opt.convert("RGB")
+        pil_image_opt = pil_image_opt.convert("L")
+        nd_array_opt = np.array(pil_image_opt)
 
         if self.random_crop:
             arr_sar = random_crop_arr(pil_image_sar, self.resolution)
@@ -132,14 +147,23 @@ class ImageDataset(Dataset):
             arr_opt = center_crop_arr(pil_image_opt, self.resolution)
 
         if self.random_flip and random.random() < 0.5:
-            arr_sar = arr_sar[:, ::-1]
-            arr_opt = arr_opt[:, ::-1]
+            # 切片的基本结构：sequence[start:stop:step]，start和stop都没有指定意味着从头到尾都参与切片。
+            # step = -1：步长为-1表示反向读取元素，即从序列的最后一个元素开始，依次取出前面的元素。
+            arr_sar = arr_sar[:, ::-1]  # 对列进行翻转，[:, ::-1] <=> [start_line: end_line, start_row: end_row: -1]
+            arr_opt = arr_opt[:, ::-1]  # 对列进行翻转，[:, ::-1] <=> [start_line: end_line, start_row: end_row: -1]
 
         arr_sar = arr_sar.astype(np.float32) / 127.5 - 1
         arr_opt = arr_opt.astype(np.float32) / 127.5 - 1
         out_dict = {}
         if self.local_classes is not None:
             out_dict["y"] = np.array(self.local_classes[idx], dtype=np.int64)
+
+        # 如果是灰度图像，先增加一个维度，使其变为 (256, 256, 1)
+        if arr_sar.ndim == 2:
+            arr_sar = np.expand_dims(arr_sar, axis=-1)  # 或者 arr_sar[..., np.newaxis]
+        if arr_opt.ndim == 2:
+            arr_opt = np.expand_dims(arr_opt, axis=-1)  # 或者 arr_opt[..., np.newaxis]
+
         arr_sar = np.transpose(arr_sar, [2, 0, 1])
         arr_opt = np.transpose(arr_opt, [2, 0, 1])
         arr = np.concatenate((arr_sar, arr_opt), axis=0)

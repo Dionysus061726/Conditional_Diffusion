@@ -6,6 +6,8 @@ import math
 
 import torch as th
 import torch.nn as nn
+from models import partialconv2d
+from models import partialconv3d
 
 
 # PyTorch 1.7 has SiLU, but we support PyTorch 1.5.
@@ -26,9 +28,11 @@ def conv_nd(dims, *args, **kwargs):
     if dims == 1:
         return nn.Conv1d(*args, **kwargs)
     elif dims == 2:
-        return nn.Conv2d(*args, **kwargs)
+        # return nn.Conv2d(*args, **kwargs)
+        return partialconv2d.PartialConv2d(*args, **kwargs)
     elif dims == 3:
-        return nn.Conv3d(*args, **kwargs)
+        # return nn.Conv3d(*args, **kwargs)
+        return partialconv3d.PartialConv3d(*args, **kwargs)
     raise ValueError(f"unsupported dimensions: {dims}")
 
 

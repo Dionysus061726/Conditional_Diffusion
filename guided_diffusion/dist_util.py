@@ -20,7 +20,7 @@ SETUP_RETRY_COUNT = 3
 
 def setup_dist():
     """
-    Setup a distributed process group.
+    Set up a distributed process group.
     """
     if dist.is_initialized():
         return

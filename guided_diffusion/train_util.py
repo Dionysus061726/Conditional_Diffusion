@@ -13,6 +13,7 @@ from .fp16_util import MixedPrecisionTrainer
 from .nn import update_ema
 from .resample import LossAwareSampler, UniformSampler
 
+
 # For ImageNet experiments, this was a good default value.
 # We found that the lg_loss_scale quickly climbed to
 # 20-21 within the first ~1K steps of training.
@@ -22,7 +23,7 @@ INITIAL_LOG_LOSS_SCALE = 20.0
 class TrainLoop:
     def __init__(
             self,
-            *,
+            *,  # * 单独使用用于强制关键字参数，标记后续参数只能通过关键字传递
             model,
             diffusion,
             data,
@@ -38,6 +39,7 @@ class TrainLoop:
             schedule_sampler=None,
             weight_decay=0.0,
             lr_anneal_steps=0,
+            viz,
     ):
         self.model = model
         self.diffusion = diffusion
@@ -107,6 +109,8 @@ class TrainLoop:
             self.use_ddp = False
             self.ddp_model = self.model
 
+        self.viz = viz
+
     def _load_and_sync_parameters(self):
         resume_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
 
@@ -155,6 +159,7 @@ class TrainLoop:
                 not self.lr_anneal_steps
                 or self.step + self.resume_step < self.lr_anneal_steps
         ):
+            self.viz.line([logger.getkvs()['loss']], [logger.getkvs()['step']], win='train_loss', update='append')
             batch, cond = next(self.data)
             self.run_step(batch, cond)
             if self.step % self.log_interval == 0:
@@ -187,7 +192,7 @@ class TrainLoop:
             }
             last_batch = (i + self.microbatch) >= batch.shape[0]
             t, weights = self.schedule_sampler.sample(micro.shape[0], dist_util.dev())
-            micro_sar, micro_opt = th.split(micro, 3, dim=1)
+            micro_sar, micro_opt = th.split(micro, 1, dim=1)  # 04.01 修改split_size_or_sections参数值为1,以适应单通道
 
             compute_losses = functools.partial(
                 self.diffusion.training_losses,
