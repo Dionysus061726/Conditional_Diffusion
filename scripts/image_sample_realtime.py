@@ -3,9 +3,11 @@ Generate a large batch of image samples from a model and save them as a large
 numpy array. This can be used to produce samples for FID evaluation.
 """
 
+import pdb
 import argparse
 import os
 import pandas as pd
+import torch
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
@@ -21,12 +23,15 @@ from guided_diffusion.script_util import (
     add_dict_to_argparser,
     args_to_dict,
 )
-from tqdm.auto import tqdm
+from tqdm.auto import tqdm # 进度条包
+
+os.environ.setdefault('OPENAI_LOGDIR', '../results/lat_mid/01.10')
+os.environ.setdefault('NCCL_P2P_DISABLE', '1')
 
 transform_opt = transforms.Compose([
     transforms.ToTensor(),
     transforms.Resize((256, 256)),
-    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+    transforms.Normalize((0.5), (0.5)),
 ])
 
 reverse_transforms = transforms.Compose([
@@ -39,27 +44,51 @@ reverse_transforms = transforms.Compose([
 
 class pair_Dataset(Dataset):
     def __init__(self, path, transforms_sar, transforms_opt):
-        self.path_sar = os.path.join(path, "sar")
-        self.path_opt = os.path.join(path, "opt")
-        self.trans_sar = transforms_sar
-        self.trans_opt = transforms_opt
-        sar_name_list = os.listdir(self.path_sar)
-        opt_name_list = os.listdir(self.path_opt)
+        self.path_sar = os.path.join(path, "sar")  # sar文件夹路径
+        self.path_opt = os.path.join(path, "opt")  # opt文件夹路径
+        self.trans_sar = transforms_sar  # 对sar的转换
+        self.trans_opt = transforms_opt  # 对opt的转换
+        self.sar_name_list = os.listdir(self.path_sar)  # sar文件夹下影像名列表
+        self.opt_name_list = os.listdir(self.path_opt)  # opt文件夹下影像名列表
 
-        self.all_img_sar = [os.path.join(self.path_sar, sar_name_list[i]) for i in range(len(sar_name_list))]
-        self.all_img_opt = [os.path.join(self.path_opt, opt_name_list[i]) for i in range(len(opt_name_list))]
+        # 使用 sorted() 函数进行排序
+        self.sar_name_list = sorted(self.sar_name_list, key=lambda x: int(x.split('.')[0]))
+        self.opt_name_list = sorted(self.opt_name_list, key=lambda x: int(x.split('.')[0]))
+
+        self.all_img_sar = [os.path.join(self.path_sar, self.sar_name_list[i]) for i in
+                            range(len(self.sar_name_list))]  # sar文件夹下影像路径列表
+        self.all_img_opt = [os.path.join(self.path_opt, self.opt_name_list[i]) for i in
+                            range(len(self.opt_name_list))]  # opt文件夹下影像路径列表
 
     def __getitem__(self, index):
         img_path_sar = self.all_img_sar[index]
         img_path_opt = self.all_img_opt[index]
-        pil_img_sar = Image.open(img_path_sar).convert('RGB')
-        pil_img_opt = Image.open(img_path_opt).convert('RGB')
+        pil_img_sar = Image.open(img_path_sar).convert('L')
+        pil_img_opt = Image.open(img_path_opt).convert('L')
+
+        # array_sar = np.array(pil_img_sar).astype(np.float32)
+        # array_opt = np.array(pil_img_opt).astype(np.float32)
+        # array_sar_with_nan = np.where(array_sar == 0, np.nan, array_sar)
+        # array_opt_with_nan = np.where(array_opt == 0, np.nan, array_opt)
+
         img_sar = self.trans_sar(pil_img_sar)
         img_opt = self.trans_opt(pil_img_opt)
+
+        # img_sar = torch.where(img_sar == -1, torch.nan, img_sar)
+        # img_opt = torch.where(img_opt == -1, torch.nan, img_opt)
+
         return img_sar, img_opt
 
     def __len__(self):
         return len(self.all_img_sar)
+
+    def get_sar_mask(self, index):
+        img_path_sar = self.all_img_sar[index]
+        pil_img_sar = Image.open(img_path_sar).convert('RGB')
+        sar_array = np.array(pil_img_sar)
+        mask_sar = np.all(sar_array == [0, 0, 0], axis=-1)
+
+        return mask_sar
 
 
 def main():
@@ -69,9 +98,13 @@ def main():
     logger.configure()
 
     logger.log("creating model and diffusion...")
+
     model, diffusion = create_model_and_diffusion(
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
+
+    # a =dist_util.load_state_dict(args.model_path, map_location="cpu")
+
     model.load_state_dict(
         dist_util.load_state_dict(args.model_path, map_location="cpu")
     )
@@ -85,15 +118,18 @@ def main():
     all_labels = []
     all_sar = []
     all_opt = []
-    # TODO: change the path
-    pair_datas = pair_Dataset('', transform_opt, transform_opt)
+    # TODO: change the path of test datas
+    pair_datas = pair_Dataset(args.data_path, transform_opt, transform_opt) # 对sar和opt实行同样的变换
     data_loader = DataLoader(pair_datas, batch_size=args.batch_size, shuffle=False, num_workers=0)
     count = 0
-    if not os.path.exists(f'sample_results/{args.timestep_respacing}'):
-        os.makedirs(f'sample_results/{args.timestep_respacing}')
-        os.makedirs(f'sample_results/{args.timestep_respacing}/gen_opt')
-        os.makedirs(f'sample_results/{args.timestep_respacing}/cond_sar')
-        os.makedirs(f'sample_results/{args.timestep_respacing}/gt_opt')
+    # TODO: change the path of sample_results folder
+    sample_results_folder = args.sample_results_folder
+
+    if not os.path.exists(f'{sample_results_folder}/{args.timestep_respacing}'):
+        os.makedirs(f'{sample_results_folder}/{args.timestep_respacing}')
+        os.makedirs(f'{sample_results_folder}/{args.timestep_respacing}/gen_opt')
+        os.makedirs(f'{sample_results_folder}/{args.timestep_respacing}/cond_sar')
+        os.makedirs(f'{sample_results_folder}/{args.timestep_respacing}/gt_opt')
     loader = iter(data_loader)
     while count * args.batch_size < args.num_samples:
         model_kwargs = {}
@@ -114,7 +150,7 @@ def main():
 
         sample = sample_fn(
             model,
-            (args.batch_size, 3, args.image_size, args.image_size),
+            (args.batch_size, 1, args.image_size, args.image_size),  # 04.
             clip_denoised=args.clip_denoised,
             model_kwargs=model_kwargs,
             noise=None,
@@ -127,7 +163,7 @@ def main():
         sample = sample.contiguous()
 
         condition = ((condition + 1) * 127.5).clamp(0, 255).to(th.uint8)
-        condition = condition.permute(0, 2, 3, 1).squeeze()
+        condition = condition.permute(0, 2, 3, 1)
         condition = condition.contiguous()
 
         img_opt = ((gt + 1) * 127.5).clamp(0, 255).to(th.uint8)
@@ -146,22 +182,30 @@ def main():
         all_sar.extend([condition.cpu().numpy() for condition in gathered_sar])
         all_opt.extend([img_opt.cpu().numpy() for img_opt in gt_opt])
 
-        arr = np.concatenate(all_images, axis=0)
-        arr_sar = np.concatenate(all_sar, axis=0)
-        arr_opt = np.concatenate(all_opt, axis=0)
+        arr = np.concatenate(all_images, axis=0)  # gen_opt
+        arr_sar = np.concatenate(all_sar, axis=0)  # cond_sar
+        arr_opt = np.concatenate(all_opt, axis=0)  # gt_opt
 
         l = len(arr)
 
         for i in tqdm(range(l)):
-            image_out = Image.fromarray(arr[i])
-            image_out.save(
-                os.path.join(f'sample_results/{args.timestep_respacing}/gen_opt', f'{i + count * args.batch_size}.png'))
-            image_sar = Image.fromarray(arr_sar[i])
-            image_sar.save(os.path.join(f'sample_results/{args.timestep_respacing}/cond_sar',
-                                        f'{i + count * args.batch_size}.png'))
-            image_opt = Image.fromarray(arr_opt[i])
-            image_opt.save(
-                os.path.join(f'sample_results/{args.timestep_respacing}/gt_opt', f'{i + count * args.batch_size}.png'))
+            out_arr = arr[i]
+            # sar_mask = np.all(arr_sar[i] == [0, 0, 0], axis=-1)
+            # out_arr[sar_mask] = [0, 0, 0]
+            # gray_arr = np.dot(out_arr[..., :3], [0.2989, 0.5870, 0.1140])
+            out_arr = out_arr.astype(np.uint8)
+            out_arr = out_arr.squeeze(axis=-1)
+            image_out = Image.fromarray(out_arr, mode='L')
+            image_out.save(os.path.join(f'{sample_results_folder}/{args.timestep_respacing}/gen_opt',
+                                        f'{i + count * args.batch_size}.png'))  # gen_opt
+
+            image_sar = Image.fromarray(arr_sar[i].astype(np.uint8).squeeze(axis=-1), mode='L')
+            image_sar.save(os.path.join(f'{sample_results_folder}/{args.timestep_respacing}/cond_sar',
+                                        f'{i + count * args.batch_size}.png'))  # cond_sar
+
+            image_opt = Image.fromarray(arr_opt[i].astype(np.uint8).squeeze(axis=-1), mode='L')
+            image_opt.save(os.path.join(f'{sample_results_folder}/{args.timestep_respacing}/gt_opt',
+                                        f'{i + count * args.batch_size}.png'))  # gt_opt
         count += 1
         if args.class_cond:
             gathered_labels = [
@@ -207,7 +251,10 @@ def create_argparser():
         batch_size=16,
         use_ddim=False,
         model_path="",
+        data_path="",
+        sample_results_folder=""
     )
+
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()
     add_dict_to_argparser(parser, defaults)
